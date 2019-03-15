@@ -24,12 +24,15 @@ import lib
 import data
 import os
 from data import PathList
+import shutil
 
 try:
     dbDir = os.environ['LXR_DATA_DIR']
 except KeyError:
     print (argv[0] + ': LXR_DATA_DIR needs to be set')
     exit (1)
+
+dbDir = dbDir.strip().rstrip('/')
 
 db = data.DB (dbDir, readonly=False)
 
@@ -123,6 +126,14 @@ def updateReferences (blobs):
 
             obj.append (blob, lines)
             db.refs.put (ident, obj)
+
+# Backup the dbDir before update it.
+print ('Backup the DB data before update it.')
+dbDirBak = dbDir + '-bak'
+if os.path.exists(dbDir):
+    if os.path.exists(dbDirBak):
+        shutil.rmtree(dbDirBak)
+    shutil.copytree(dbDir, dbDirBak, symlinks=True)
 
 # Main
 
