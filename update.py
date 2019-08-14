@@ -34,6 +34,16 @@ except KeyError:
 
 dbDir = dbDir.strip().rstrip('/')
 
+# Backup the dbDir before update it.
+print ('Backup the DB data before update it.')
+dbDirBak = dbDir + '-bak'
+if os.path.exists(dbDir):
+    if os.path.exists(dbDirBak):
+        shutil.rmtree(dbDirBak)
+    shutil.copytree(dbDir, dbDirBak, symlinks=True)
+else:
+    os.makedirs(dbDir)
+
 db = data.DB (dbDir, readonly=False)
 
 def updateBlobIDs (tag):
@@ -126,14 +136,6 @@ def updateReferences (blobs):
 
             obj.append (blob, lines)
             db.refs.put (ident, obj)
-
-# Backup the dbDir before update it.
-print ('Backup the DB data before update it.')
-dbDirBak = dbDir + '-bak'
-if os.path.exists(dbDir):
-    if os.path.exists(dbDirBak):
-        shutil.rmtree(dbDirBak)
-    shutil.copytree(dbDir, dbDirBak, symlinks=True)
 
 # Main
 
