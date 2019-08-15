@@ -22,9 +22,10 @@ Requirements
 * Exuberant Ctags
 * Perl (for non-greedy regexes)
 
-
 Installation
 ------------
+
+See the next paragraph for building ready-made Docker images.
 
 Elixir has the following architecture:
 
@@ -114,6 +115,15 @@ Here is an example configuration for Apache:
 
 Don't forget to enable cgi and rewrite support with `a2enmod cgi rewrite`.
 
+Building Docker images
+----------------------
+
+Docker files are provided in the "docker/" directory. To generate your own
+Docker image for indexing the Linux kernel sources (for example),
+download the "Dockerfile" file for your target distribution and run:
+
+    $ docker build -t elixir --build-arg GIT_REPO_URL=git://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git .
+
 Hardware requirements
 ---------------------
 
@@ -121,11 +131,16 @@ Performance requirements depend mostly on the amount of traffic that you get
 on your Elixir service. However, a fast server also helps for the initial
 indexing of the projects.
 
+SSD storage is strongly recommended because of the frequent access to
+git repositories.
+
 At Bootlin, here are a few details about the server we're using:
 
-* As of April 2018, our Elixir service consumes 165 GB of data (supporting all projects, with some data duplication).
-  Therefore, a 256 GB (SSD!) disk should be fine for most needs.
-* The server has 64GB of DDR4 ECC RAM, and a E3-1245 v5 CPU running at 3.50GHz (4 cores / 8 threads).
+* As of July 2019, our Elixir service consumes 17 GB of data (supporting all projects),
+  or for the Linux kernel alone (version 5.2 being the latest), 12 GB for indexing data,
+  and 2 GB for the git repository.
+* We're using an LXD instance with 8 GB of RAM on a cloud server with 8 CPU cores
+  running at 3.1 GHz.
 
 Supporting a new project
 ------------------------
@@ -195,8 +210,9 @@ command. Here's what you get for the Linux project:
 
 The first column is the top level menu entry for versions.
 The second one is the next level menu entry, and
-the third one is the actual version that can be selected by
-the menu.
+the third one is the actual version that can be selected by the menu.
+Note that this third entry must correspond to the exact
+name of the tag in git.
 
 If the default behavior is not what you want, you will have
 to customize the `list_tags_h` function.
