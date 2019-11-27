@@ -22,50 +22,98 @@ from lib import script, scriptLines
 import lib
 import data
 import os
+from collections import OrderedDict
 
-try:
-    dbDir = os.environ['LXR_DATA_DIR']
-except KeyError:
-    print ('LXR_DATA_DIR needs to be set')
-    exit (1)
-
-db = data.DB (dbDir, readonly=True)
+db = data.DB (lib.getDataDir(), readonly=True)
 
 from io import BytesIO
 
+class SymbolInstance(object):
+    def __init__(self, path, line, type=None):
+        self.path = path
+        self.line = line
+        self.type = type
+
+def decode(byte_object):
+    # decode('ascii') fails on special chars
+    # FIXME: major hack until we handle everything as bytestrings
+    try:
+        return byte_object.decode ('utf-8')
+    except UnicodeDecodeError:
+        return byte_object.decode ('iso-8859-1')
+
 def query (cmd, *args):
-    buffer = BytesIO()
-
-    def echo (arg):
-        buffer.write (arg)
-
     if cmd == 'versions':
-        for p in scriptLines ('list-tags', '-h'):
-            if db.vers.exists (p.split(b' ')[2]):
-                echo (p + b'\n')
+
+        # Returns the list of indexed versions in the following format:
+        # topmenu submenu tag
+        # Example: v3 v3.1 v3.1-rc10
+        versions = OrderedDict()
+
+        for line in scriptLines ('list-tags', '-h'):
+            taginfo = decode(line).split(' ')
+            num = len(taginfo)
+            topmenu, submenu = 'FIXME', 'FIXME'
+
+            if (num == 1):
+                tag, = taginfo
+            elif (num == 2):
+                submenu,tag = taginfo
+            elif (num ==3):
+                topmenu,submenu,tag = taginfo
+
+            if db.vers.exists (tag):
+                if topmenu not in versions:
+                    versions[topmenu] = OrderedDict()
+                if submenu not in versions[topmenu]:
+                    versions[topmenu][submenu] = []
+                versions[topmenu][submenu].append (tag)
+
+        return versions
 
     elif cmd == 'latest':
-        p = script ('get-latest')
-        echo (p)
+
+        # Returns the tag considered as the latest one
+        # TODO: this latest tag may have just been retrieved
+        # in the git repository and may not have been indexed yet
+        # This could results in failed queries
+
+        return decode(script ('get-latest')).rstrip('\n')
 
     elif cmd == 'type':
+
+        # Returns the type (blob or tree) associated to
+        # the given path. Example:
+        # > ./query.py type v3.1-rc10 /Makefile
+        # blob
+        # > ./query.py type v3.1-rc10 /arch
+        # tree
+
         version = args[0]
         path = args[1]
-        p = script ('get-type', version, path)
-        echo (p)
+        return decode(script ('get-type', version, path)).strip()
 
     elif cmd == 'dir':
+
+	# Returns the contents (trees or blobs) of the specified directory
+	# Example: ./query.py dir v3.1-rc10 /arch
+
         version = args[0]
         path = args[1]
-        p = script ('get-dir', version, path)
-        echo (p)
+        entries_str =  decode(script ('get-dir', version, path))
+        return entries_str.split("\n")[:-1]
 
     elif cmd == 'file':
+
+	# Returns the contents of the specified file
+        # Tokens are marked for further processing
+        # Example: ./query.py file v3.1-rc10 /Makefile
+
         version = args[0]
         path = args[1]
-        ext = os.path.splitext(path)[1]
 
-        if ext in ['.c', '.cc', '.cpp', '.h']:
+        if lib.hasSupportedExt (path):
+            buffer = BytesIO()
             tokens = scriptLines ('tokenize-file', version, path)
             even = True
             for tok in tokens:
@@ -74,22 +122,26 @@ def query (cmd, *args):
                     tok = b'\033[31m' + tok + b'\033[0m'
                 else:
                     tok = lib.unescape (tok)
-                echo (tok)
+                buffer.write (tok)
+            return decode(buffer.getvalue())
         else:
-            p = script ('get-file', version, path)
-            echo (p)
+            return decode(script ('get-file', version, path))
 
     elif cmd == 'ident':
+
+	# Returns identifier search results
+
         version = args[0]
         ident = args[1]
 
+        symbol_definitions = []
+        symbol_references = []
+
         if not db.defs.exists (ident):
-            echo (('Unknown identifier: ' + ident + '\n').encode())
-            return buffer.getvalue()
+            return symbol_definitions, symbol_references
 
         if not db.vers.exists (version):
-            echo (('Unknown version: ' + version + '\n').encode())
-            return buffer.getvalue()
+            return symbol_definitions, symbol_references
 
         vers = db.vers.get (version).iter()
         defs = db.defs.get (ident).iter (dummy=True)
@@ -116,18 +168,16 @@ def query (cmd, *args):
             if id1 == id3:
                 rBuf.append ((path, rlines))
 
-        echo (('Defined in ' + str(len(dBuf)) + ' files:\n').encode())
         for path, type, dline in sorted (dBuf):
-            echo ((path + ': ' + str (dline) + ' (' + type + ')\n').encode())
+            symbol_definitions.append(SymbolInstance(path, dline, type))
 
-        echo (('\nReferenced in ' + str(len(rBuf)) + ' files:\n').encode())
         for path, rlines in sorted (rBuf):
-            echo ((path + ': ' + rlines + '\n').encode())
+            symbol_references.append(SymbolInstance(path, rlines))
+
+        return symbol_definitions, symbol_references
 
     else:
-        echo (('Unknown subcommand: ' + cmd + '\n').encode())
-
-    return buffer.getvalue()
+        return ('Unknown subcommand: ' + cmd + '\n')
 
 if __name__ == "__main__":
     import sys

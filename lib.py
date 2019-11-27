@@ -18,7 +18,7 @@
 #  You should have received a copy of the GNU Affero General Public License
 #  along with Elixir.  If not, see <http://www.gnu.org/licenses/>.
 
-import subprocess
+import subprocess, os
 
 def script (*args):
     args = ('./script.sh',) + args
@@ -30,6 +30,9 @@ def script (*args):
     else:
         p = subprocess.check_output(args)
     return p
+
+# Invoke ./script.sh with the given arguments
+# Returns the list of output lines
 
 def scriptLines (*args):
     p = script (*args)
@@ -46,6 +49,10 @@ def unescape (bstr):
         b = b.encode()
         bstr = bstr.replace (a, b)
     return bstr
+
+# List of tokens which we don't want to consider as identifiers
+# Typically for very frequent variable names and things redefined by #define
+# TODO: allow to have per project blacklists
 
 blacklist = (
     b'if',
@@ -145,6 +152,7 @@ blacklist = (
     b'result',
     b'extern',
     b'driver',
+    b'ptr',
     )
 
 def isIdent (bstr):
@@ -161,3 +169,18 @@ def autoBytes (arg):
     elif type (arg) is int:
         arg = str(arg).encode()
     return arg
+
+def getDataDir ():
+    try:
+        dir=os.environ['LXR_DATA_DIR']
+    except KeyError:
+        print (argv[0] + ': LXR_DATA_DIR needs to be set')
+        exit (1)
+    return dir
+
+def currentProject ():
+    return os.path.basename (os.path.dirname (getDataDir ()))
+
+def hasSupportedExt (filename): 
+    ext = os.path.splitext(filename)[1]
+    return ext.lower() in ['.c', '.cc', '.cpp', '.c++', '.cxx', '.h', '.s']

@@ -26,11 +26,7 @@ import os
 from data import PathList
 import shutil
 
-try:
-    dbDir = os.environ['LXR_DATA_DIR']
-except KeyError:
-    print (argv[0] + ': LXR_DATA_DIR needs to be set')
-    exit (1)
+db = data.DB (lib.getDataDir (), readonly=False)
 
 dbDir = dbDir.strip().rstrip('/')
 
@@ -45,13 +41,16 @@ else:
     os.makedirs(dbDir)
 
 db = data.DB (dbDir, readonly=False)
+# Store new blobs hashed and file names (without path) for new tag
 
 def updateBlobIDs (tag):
+
     if db.vars.exists ('numBlobs'):
         idx = db.vars.get ('numBlobs')
     else:
         idx = 0
 
+    # Get blob hashes and associated file names (without path)
     blobs = scriptLines ('list-blobs', '-f', tag)
 
     newBlobs = []
@@ -67,11 +66,13 @@ def updateBlobIDs (tag):
     return newBlobs
 
 def updateVersions (tag):
+
+    # Get blob hashes and associated file paths
     blobs = scriptLines ('list-blobs', '-p', tag)
     buf = []
 
     for blob in blobs:
-        hash, path = blob.split (b' ',maxsplit=1)
+        hash, path = blob.split (b' ', maxsplit=1)
         idx = db.blob.get (hash)
         buf.append ((idx, path))
 
@@ -83,12 +84,11 @@ def updateVersions (tag):
 
 def updateDefinitions (blobs):
     for blob in blobs:
-        if (blob % 100 == 0): print ('D:', blob)
+        if (blob % 1000 == 0): progress ('defs: ' + str(blob))
         hash = db.hash.get (blob)
         filename = db.file.get (blob)
 
-        ext = os.path.splitext(filename)[1]
-        if ext not in ['.c', '.cc', '.cpp', '.h']: continue
+        if not lib.hasSupportedExt (filename): continue
 
         lines = scriptLines ('parse-defs', hash, filename)
         for l in lines:
@@ -106,12 +106,11 @@ def updateDefinitions (blobs):
 
 def updateReferences (blobs):
     for blob in blobs:
-        if (blob % 100 == 0): print ('R:', blob)
+        if (blob % 1000 == 0): progress ('refs: ' + str(blob))
         hash = db.hash.get (blob)
         filename = db.file.get (blob)
 
-        ext = os.path.splitext(filename)[1]
-        if ext not in ['.c', '.cc', '.cpp', '.h']: continue
+        if not lib.hasSupportedExt (filename): continue
 
         tokens = scriptLines ('tokenize-file', '-b', hash)
         even = True
@@ -137,6 +136,9 @@ def updateReferences (blobs):
             obj.append (blob, lines)
             db.refs.put (ident, obj)
 
+def progress (msg):
+    print ('{} - {} ({:.0%})'.format(project, msg, tagCount/numTags))
+
 # Main
 
 tagBuf = []
@@ -144,12 +146,16 @@ for tag in scriptLines ('list-tags'):
     if not db.vers.exists (tag):
         tagBuf.append (tag)
 
-print ('Found ' + str(len(tagBuf)) + ' new tags')
+numTags = len(tagBuf)
+tagCount = 0
+project = lib.currentProject ()
+
+print (project + ' - found ' + str(len(tagBuf)) + ' new tags')
 
 for tag in tagBuf:
-    print (tag.decode(), end=': ')
+    tagCount +=1
     newBlobs = updateBlobIDs (tag)
-    print (str(len(newBlobs)) + ' new blobs')
+    progress (tag.decode() + ': ' + str(len(newBlobs)) + ' new blobs')
     updateVersions (tag)
     updateDefinitions (newBlobs)
     updateReferences (newBlobs)

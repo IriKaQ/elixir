@@ -1,4 +1,4 @@
-# Elixir definitions for Coreboot
+# Elixir definitions for Ofono
 
 list_tags_h()
 {

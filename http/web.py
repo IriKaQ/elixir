@@ -19,6 +19,7 @@
 #  along with Elixir.  If not, see <http://www.gnu.org/licenses/>.
 
 from io import StringIO
+from urllib import parse
 
 realprint = print
 outputBuffer = StringIO()
@@ -27,19 +28,21 @@ def print (arg, end='\n'):
     global outputBuffer
     outputBuffer.write (arg + end)
 
-# enable debugging
+# Enable CGI Trackback Manager for debugging (https://docs.python.org/fr/3/library/cgitb.html)
 import cgitb
 cgitb.enable()
 
 import cgi
 import os
+import re
 from re import search, sub
-from collections import OrderedDict
 
 ident = ''
 status = 200
 
+# Split the URL into its components (project, version, cmd, arg)
 m = search ('^/([^/]*)/([^/]*)/([^/]*)(.*)$', os.environ['SCRIPT_URL'])
+
 if m:
     project = m.group (1)
     version = m.group (2)
@@ -67,7 +70,7 @@ if m:
         ident2 = form.getvalue ('i')
         if ident == '' and ident2:
             status = 302
-            ident2 = ident2.strip()
+            ident2 = parse.quote(ident2.strip())
             location = '/'+project+'/'+version+'/ident/'+ident2
         else:
             mode = 'ident'
@@ -103,24 +106,16 @@ import sys
 sys.path = [ sys.path[0] + '/..' ] + sys.path
 import query
 
-def do_query (*args):
+def call_query(*args):
     cwd = os.getcwd()
     os.chdir ('..')
-    a = query.query (*args)
+    ret = query.query (*args)
     os.chdir (cwd)
 
-    # decode('ascii') fails on special chars
-    # FIXME: major hack until we handle everything as bytestrings
-    try:
-        a = a.decode ('utf-8')
-    except UnicodeDecodeError:
-        a = a.decode ('iso-8859-1')
-    a = a.split ('\n')
-    del a[-1]
-    return a
+    return ret
 
 if version == 'latest':
-    tag = do_query ('latest')[0]
+    tag = call_query ('latest')
 else:
     tag = version
 
@@ -135,42 +130,28 @@ data = {
     'breadcrumb': '<a class="project" href="'+version+'/source">/</a>'
 }
 
-lines = do_query ('versions')
-va = OrderedDict()
-for l in lines:
-    m = search ('^([^ ]*) ([^ ]*) ([^ ]*)$', l)
-    if not m:
-        continue
-    m1 = m.group(1)
-    m2 = m.group(2)
-    l = m.group(3)
-
-    if m1 not in va:
-        va[m1] = OrderedDict()
-    if m2 not in va[m1]:
-        va[m1][m2] = []
-    va[m1][m2].append (l)
+versions = call_query ('versions')
 
 v = ''
 b = 1
-for v1k in va:
-    v1v = va[v1k]
+for topmenu in versions:
+    submenus = versions[topmenu]
     v += '<li>\n'
-    v += '\t<span>'+v1k+'</span>\n'
+    v += '\t<span>'+topmenu+'</span>\n'
     v += '\t<ul>\n'
     b += 1
-    for v2k in v1v:
-        v2v = v1v[v2k]
-        if v2k == v2v[0] and len(v2v) == 1:
-            if v2k == tag: v += '\t\t<li class="li-link active"><a href="'+v2k+'/'+url+'">'+v2k+'</a></li>\n'
-            else: v += '\t\t<li class="li-link"><a href="'+v2k+'/'+url+'">'+v2k+'</a></li>\n'
+    for submenu in submenus:
+        tags = submenus[submenu]
+        if submenu == tags[0] and len(tags) == 1:
+            if submenu == tag: v += '\t\t<li class="li-link active"><a href="'+submenu+'/'+url+'">'+submenu+'</a></li>\n'
+            else: v += '\t\t<li class="li-link"><a href="'+submenu+'/'+url+'">'+submenu+'</a></li>\n'
         else:
             v += '\t\t<li>\n'
-            v += '\t\t\t<span>'+v2k+'</span>\n'
+            v += '\t\t\t<span>'+submenu+'</span>\n'
             v += '\t\t\t<ul>\n'
-            for v3 in v2v:
-                if v3 == tag: v += '\t\t\t\t<li class="li-link active"><a href="'+v3+'/'+url+'">'+v3+'</a></li>\n'
-                else: v += '\t\t\t\t<li class="li-link"><a href="'+v3+'/'+url+'">'+v3+'</a></li>\n'
+            for _tag in tags:
+                if _tag == tag: v += '\t\t\t\t<li class="li-link active"><a href="'+_tag+'/'+url+'">'+_tag+'</a></li>\n'
+                else: v += '\t\t\t\t<li class="li-link"><a href="'+_tag+'/'+url+'">'+_tag+'</a></li>\n'
             v += '\t\t\t</ul></li>\n'
     v += '\t</ul></li>\n'
 
@@ -192,13 +173,13 @@ if mode == 'source':
 
     lines = ['null - -']
 
-    type = do_query ('type', tag, path)
-    if len (type) == 1:
-        type = type[0]
+    type = call_query ('type', tag, path)
+    if len (type) > 0:
         if type == 'tree':
-            lines += do_query ('dir', tag, path)
+            lines += call_query ('dir', tag, path)
         elif type == 'blob':
-            lines += do_query ('file', tag, path)
+            blob_content = call_query ('file', tag, path)
+            lines += blob_content.split("\n")[:-1]
     else:
         print ('<div class="lxrerror"><h2>This file does not exist.</h2></div>')
         status = 404
@@ -241,37 +222,72 @@ if mode == 'source':
         import pygments
         import pygments.lexers
         import pygments.formatters
+
         links = []
+        dtsi = []
         code = StringIO()
+        kconfig = []
+
+        filename, extension = os.path.splitext(path)
+        extension = extension[1:].lower()
+        filename = os.path.basename(filename)
 
         def keep_links(match):
             links.append (match.group (1))
-            g = match.group(1)
             return '__KEEPLINKS__' + str(len(links))
 
         def replace_links(match):
             i = links[int (match.group (1)) - 1]
             return '<a href="'+version+'/ident/'+i+'">'+i+'</a>'
 
+        def keep_dtsi(match):
+            dtsi.append (match.group (4))
+            return match.group (1) + match.group (2) + match.group (3) + '"__KEEPDTSI__' + str(len(dtsi)) + '"'
+
+        def replace_dtsi(match):
+            w = dtsi[int (match.group (1)) - 1]
+            return '<a href="'+version+'/source'+os.path.dirname(path)+'/'+w+'">'+w+'</a>'
+
+        def keep_kconfig(match):
+            kconfig.append (match.group (4))
+            return match.group (1) + match.group (2) + match.group (3) + '"__KEEPKCONFIG__' + str(len(kconfig)) + '"'
+
+        def replace_kconfig(match):
+            w = kconfig[int (match.group (1)) - 1]
+            return '<a href="'+version+'/source/'+w+'">'+w+'</a>'
+
         for l in lines:
+	    # Protect identifiers, to be able to replace them in the pygments output (replace_links function)
             l = sub ('\033\[31m(.*?)\033\[0m', keep_links, l)
-            l = sub ('\033\[32m', '', l)
-            l = sub ('\033\[33m', '', l)
-            l = sub ('\033\[0m', '', l)
             code.write (l + '\n')
 
         code = code.getvalue()
+
+        if extension in {'dts', 'dtsi'}:
+            code = sub ('^(\s*)(#include|/include/)(\s*)\"(.*?)\"', keep_dtsi, code, flags=re.MULTILINE)
+
+        if filename in {'Kconfig'}:
+            code = sub ('^(\s*)(source)(\s*)\"(.*?)\"', keep_kconfig, code, flags=re.MULTILINE)
 
         try:
             lexer = pygments.lexers.guess_lexer_for_filename (path, code)
         except:
             lexer = pygments.lexers.get_lexer_by_name ('text')
 
+        lexer.stripnl = False
         formatter = pygments.formatters.HtmlFormatter (linenos=True, anchorlinenos=True)
         result = pygments.highlight (code, lexer, formatter)
 
+	# Replace line numbers by links to the corresponding line in the current file
         result = sub ('href="#-(\d+)', 'name="L\\1" id="L\\1" href="'+version+'/source'+path+'#L\\1', result)
+	# Add the links to identifiers, using the KEEPLINKS markers
         result = sub ('__KEEPLINKS__(\d+)', replace_links, result)
+
+        if extension in {'dts', 'dtsi'}:
+            result = sub ('__KEEPDTSI__(\d+)', replace_dtsi, result)
+
+        if filename in {'Kconfig'}:
+            result = sub ('__KEEPKCONFIG__(\d+)', replace_kconfig, result)
 
         print ('<div class="lxrcode">' + result + '</div>')
 
@@ -279,49 +295,42 @@ if mode == 'source':
 elif mode == 'ident':
     data['title'] = project.capitalize ()+' source code: '+ident+' identifier ('+tag+') - Bootlin'
 
-    lines = do_query ('ident', tag, ident)
-    lines = iter (lines)
+    symbol_definitions, symbol_references = call_query ('ident', tag, ident)
 
     print ('<div class="lxrident">')
-    m = search ('Defined in (\d*) file', next (lines))
-    if m:
-        num = int (m.group(1))
-        if num == 0:
-            status = 404
-
-        print ('<h2>Defined in '+str(num)+' files:</h2>')
+    if len(symbol_definitions):
+        print ('<h2>Defined in '+str(len(symbol_definitions))+' files:</h2>')
         print ('<ul>')
-        for i in range (0, num):
-            l = next (lines)
-            m = search ('^(.*): (\d*) \((.*)\)$', l)
-            f, n, t = m.groups()
-            print ('<li><a href="'+version+'/source/'+f+'#L'+n+'"><strong>'+f+'</strong>, line '+n+' <em>(as a '+t+')</em></a>')
+        for symbol_definition in symbol_definitions:
+            print ('<li><a href="{v}/source/{f}#L{n}"><strong>{f}</strong>, line {n} <em>(as a {t})</em></a>'.format(
+                v=version, f=symbol_definition.path, n=symbol_definition.line, t=symbol_definition.type
+            ))
         print ('</ul>')
 
-        next (lines)
-
-        m = search ('Referenced in (\d*) file', next (lines))
-        num = int (m.group(1))
-
-        print ('<h2>Referenced in '+str(num)+' files:</h2>')
+        print ('<h2>Referenced in '+str(len(symbol_references))+' files:</h2>')
         print ('<ul>')
-        for i in range (0, num):
-            l = next (lines)
-            m = search ('^(.*): (.*)$', l)
-            f = m.group (1)
-            ln = m.group (2).split (',')
+        for symbol_reference in symbol_references:
+            ln = symbol_reference.line.split (',')
             if len (ln) == 1:
                 n = ln[0]
-                print ('<li><a href="'+version+'/source/'+f+'#L'+str(n)+'"><strong>'+f+'</strong>, line '+str(n)+'</a>')
+                print ('<li><a href="{v}/source/{f}#L{n}"><strong>{f}</strong>, line {n}</a>'.format(
+                    v=version, f=symbol_reference.path, n=n
+                ))
             else:
-                if num > 100:    # Concise display
+                if len(symbol_references) > 100:    # Concise display
                     n = len (ln)
-                    print ('<li><a href="'+version+'/source/'+f+'"><strong>'+f+'</strong>, <em>'+str(n)+' times</em></a>')
+                    print ('<li><a href="{v}/source/{f}"><strong>{f}</strong>, <em>{n} times</em></a>'.format(
+                        v=version, f=symbol_reference.path, n=n
+                    ))
                 else:    # Verbose display
-                    print ('<li><a href="'+version+'/source/'+f+'#L'+str(ln[0])+'"><strong>'+f+'</strong></a>')
+                    print ('<li><a href="{v}/source/{f}#L{n}"><strong>{f}</strong></a>'.format(
+                        v=version, f=symbol_reference.path, n=ln[0]
+                    ))
                     print ('<ul>')
                     for n in ln:
-                        print ('<li><a href="'+version+'/source/'+f+'#L'+str(n)+'">line '+str(n)+'</a>')
+                        print ('<li><a href="{v}/source/{f}#L{n}">line {n}</a>'.format(
+                            v=version, f=symbol_reference.path, n=n
+                        ))
                     print ('</ul>')
         print ('</ul>')
     else:
