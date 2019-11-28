@@ -26,7 +26,7 @@ import os
 from data import PathList
 import shutil
 
-db = data.DB (lib.getDataDir (), readonly=False)
+dbDir = lib.getDataDir ()
 
 dbDir = dbDir.strip().rstrip('/')
 
