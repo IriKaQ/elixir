@@ -24,7 +24,7 @@ import data
 import os
 from collections import OrderedDict
 
-db = data.DB (lib.getDataDir(), readonly=True)
+db = data.DB(lib.getDataDir(), readonly=True)
 
 from io import BytesIO
 
@@ -34,15 +34,25 @@ class SymbolInstance(object):
         self.line = line
         self.type = type
 
+    def __repr__(self):
+        type_repr = ""
+        if self.type:
+            type_repr = f" , type: {self.type}"
+
+        return f"Symbol in path: {self.path}, line: {self.line}" + type_repr
+
+    def __str__(self):
+        return self.__repr__()
+
 def decode(byte_object):
     # decode('ascii') fails on special chars
     # FIXME: major hack until we handle everything as bytestrings
     try:
-        return byte_object.decode ('utf-8')
+        return byte_object.decode('utf-8')
     except UnicodeDecodeError:
-        return byte_object.decode ('iso-8859-1')
+        return byte_object.decode('iso-8859-1')
 
-def query (cmd, *args):
+def query(cmd, *args):
     if cmd == 'versions':
 
         # Returns the list of indexed versions in the following format:
@@ -50,7 +60,7 @@ def query (cmd, *args):
         # Example: v3 v3.1 v3.1-rc10
         versions = OrderedDict()
 
-        for line in scriptLines ('list-tags', '-h'):
+        for line in scriptLines('list-tags', '-h'):
             taginfo = decode(line).split(' ')
             num = len(taginfo)
             topmenu, submenu = 'FIXME', 'FIXME'
@@ -62,12 +72,12 @@ def query (cmd, *args):
             elif (num ==3):
                 topmenu,submenu,tag = taginfo
 
-            if db.vers.exists (tag):
+            if db.vers.exists(tag):
                 if topmenu not in versions:
                     versions[topmenu] = OrderedDict()
                 if submenu not in versions[topmenu]:
                     versions[topmenu][submenu] = []
-                versions[topmenu][submenu].append (tag)
+                versions[topmenu][submenu].append(tag)
 
         return versions
 
@@ -78,7 +88,7 @@ def query (cmd, *args):
         # in the git repository and may not have been indexed yet
         # This could results in failed queries
 
-        return decode(script ('get-latest')).rstrip('\n')
+        return decode(script('get-latest')).rstrip('\n')
 
     elif cmd == 'type':
 
@@ -91,45 +101,45 @@ def query (cmd, *args):
 
         version = args[0]
         path = args[1]
-        return decode(script ('get-type', version, path)).strip()
+        return decode(script('get-type', version, path)).strip()
 
     elif cmd == 'dir':
 
-	# Returns the contents (trees or blobs) of the specified directory
-	# Example: ./query.py dir v3.1-rc10 /arch
+        # Returns the contents (trees or blobs) of the specified directory
+        # Example: ./query.py dir v3.1-rc10 /arch
 
         version = args[0]
         path = args[1]
-        entries_str =  decode(script ('get-dir', version, path))
+        entries_str =  decode(script('get-dir', version, path))
         return entries_str.split("\n")[:-1]
 
     elif cmd == 'file':
 
-	# Returns the contents of the specified file
+        # Returns the contents of the specified file
         # Tokens are marked for further processing
         # Example: ./query.py file v3.1-rc10 /Makefile
 
         version = args[0]
         path = args[1]
 
-        if lib.hasSupportedExt (path):
+        if lib.hasSupportedExt(path):
             buffer = BytesIO()
-            tokens = scriptLines ('tokenize-file', version, path)
+            tokens = scriptLines('tokenize-file', version, path)
             even = True
             for tok in tokens:
                 even = not even
-                if even and db.defs.exists (tok) and lib.isIdent (tok):
+                if even and db.defs.exists(tok) and lib.isIdent(tok):
                     tok = b'\033[31m' + tok + b'\033[0m'
                 else:
-                    tok = lib.unescape (tok)
-                buffer.write (tok)
+                    tok = lib.unescape(tok)
+                buffer.write(tok)
             return decode(buffer.getvalue())
         else:
-            return decode(script ('get-file', version, path))
+            return decode(script('get-file', version, path))
 
     elif cmd == 'ident':
 
-	# Returns identifier search results
+        # Returns identifier search results
 
         version = args[0]
         ident = args[1]
@@ -137,50 +147,76 @@ def query (cmd, *args):
         symbol_definitions = []
         symbol_references = []
 
-        if not db.defs.exists (ident):
+        if not db.defs.exists(ident):
             return symbol_definitions, symbol_references
 
-        if not db.vers.exists (version):
+        if not db.vers.exists(version):
             return symbol_definitions, symbol_references
 
-        vers = db.vers.get (version).iter()
-        defs = db.defs.get (ident).iter (dummy=True)
+        vers = db.vers.get(version).iter()
+        defs = db.defs.get(ident).iter(dummy=True)
         # FIXME: see why we can have a discrepancy between defs and refs
-        if db.refs.exists (ident):
-            refs = db.refs.get (ident).iter (dummy=True)
+        if db.refs.exists(ident):
+            refs = db.refs.get(ident).iter(dummy=True)
         else:
-            refs = data.RefList().iter (dummy=True)
+            refs = data.RefList().iter(dummy=True)
 
-        id2, type, dline = next (defs)
-        id3, rlines = next (refs)
+        id2, type, dline = next(defs)
+        id3, rlines = next(refs)
 
         dBuf = []
         rBuf = []
 
         for id1, path in vers:
             while id1 > id2:
-                id2, type, dline = next (defs)
+                id2, type, dline = next(defs)
             while id1 > id3:
-                id3, rlines = next (refs)
+                id3, rlines = next(refs)
             while id1 == id2:
-                dBuf.append ((path, type, dline))
-                id2, type, dline = next (defs)
+                dBuf.append((path, type, dline))
+                id2, type, dline = next(defs)
             if id1 == id3:
-                rBuf.append ((path, rlines))
+                rBuf.append((path, rlines))
 
-        for path, type, dline in sorted (dBuf):
+        for path, type, dline in sorted(dBuf):
             symbol_definitions.append(SymbolInstance(path, dline, type))
 
-        for path, rlines in sorted (rBuf):
+        for path, rlines in sorted(rBuf):
             symbol_references.append(SymbolInstance(path, rlines))
 
         return symbol_definitions, symbol_references
 
     else:
-        return ('Unknown subcommand: ' + cmd + '\n')
+        return('Unknown subcommand: ' + cmd + '\n')
+
+def cmd_ident(version, ident, **kwargs):
+    symbol_definitions, symbol_references = query("ident", version, ident)
+    print("Symbol Definitions:")
+    for symbol_definition in symbol_definitions:
+        print(symbol_definition)
+
+    print("\nSymbol References:")
+    for symbol_reference in symbol_references:
+        print(symbol_reference)
+
+def cmd_file(version, path, **kwargs):
+    code = query("file", version, path)
+    print(code)
 
 if __name__ == "__main__":
-    import sys
+    import argparse
 
-    output = query (*(sys.argv[1:]))
-    sys.stdout.buffer.write (output)
+    parser = argparse.ArgumentParser()
+    parser.add_argument("version", help="The version of the project", type=str, default="latest")
+    subparsers = parser.add_subparsers()
+
+    ident_subparser = subparsers.add_parser('ident', help="Get definitions and references of an identifier")
+    ident_subparser.add_argument('ident', type=str, help="The name of the identifier")
+    ident_subparser.set_defaults(func=cmd_ident)
+
+    file_subparser = subparsers.add_parser('file', help="Get a source file")
+    file_subparser.add_argument('path', type=str, help="The path of the source file")
+    file_subparser.set_defaults(func=cmd_file)
+
+    args = parser.parse_args()
+    args.func(**vars(args))

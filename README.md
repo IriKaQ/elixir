@@ -124,8 +124,8 @@ cd /usr/local/elixir/
 Verify that the queries work:
 
 ```
-$ ./query.py file v4.10 /kernel/sched/clock.c
-$ ./query.py ident v4.10 raw_spin_unlock_irq
+$ ./query.py v4.10 ident raw_spin_unlock_irq
+$ ./query.py v4.10 file /kernel/sched/clock.c
 ```
 
 Note: `v4.10` can be replaced with any other tag.
