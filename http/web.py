@@ -28,33 +28,34 @@ def print(arg, end='\n'):
     global outputBuffer
     outputBuffer.write(arg + end)
 
-# Enable CGI Trackback Manager for debugging (https://docs.python.org/fr/3/library/cgitb.html)
 import cgitb
-cgitb.enable(display=0, logdir='/tmp/elixir-errors', format='text')
-
 import cgi
 import os
 import re
 from re import search, sub
 
+# Create /tmp/elixir-errors if not existing yet (could happen after a reboot)
+errdir = '/tmp/elixir-errors'
+
+if not(os.path.isdir(errdir)):
+    os.makedirs(errdir, exist_ok=True)
+
+# Enable CGI Trackback Manager for debugging (https://docs.python.org/fr/3/library/cgitb.html)
+cgitb.enable(display=0, logdir=errdir, format='text')
+
 ident = ''
 status = 200
 
+url = os.environ.get('REQUEST_URI') or os.environ.get('SCRIPT_URL')
 # Split the URL into its components (project, version, cmd, arg)
-m = search('^/([^/]*)/([^/]*)/([^/]*)(.*)$', os.environ['SCRIPT_URL'])
+m = search('^/([^/]*)/([^/]*)/([^/]*)(.*)$', url)
 
 if m:
     project = m.group(1)
     version = m.group(2)
+    version_decoded = parse.unquote(version)
     cmd = m.group(3)
     arg = m.group(4)
-
-    # Support old LXR links
-    if not(project and search('^[A-Za-z0-9-]+$', project)) \
-    or not(version and search('^[A-Za-z0-9._-]+$', version)):
-        status = 302
-        location = '/linux/latest/'+cmd+arg
-        cmd = ''
 
     basedir = os.environ['LXR_PROJ_DIR']
     datadir = basedir + '/' + project + '/data'
@@ -72,7 +73,7 @@ if m:
         else:
             mode = 'source'
             if not search('^[A-Za-z0-9_/.,+-]*$', path):
-                path = 'INVALID'
+                status = 400
             url = 'source'+path
 
     elif cmd == 'ident':
@@ -118,10 +119,10 @@ import sys
 sys.path = [ sys.path[0] + '/..' ] + sys.path
 from query import query
 
-if version == 'latest':
+if version_decoded == 'latest':
     tag = query('latest')
 else:
-    tag = version
+    tag = version_decoded
 
 data = {
     'baseurl': '/' + project + '/',
@@ -154,26 +155,36 @@ for topmenu in versions:
             v += '\t\t\t<span>'+submenu+'</span>\n'
             v += '\t\t\t<ul>\n'
             for _tag in tags:
-                if _tag == tag: v += '\t\t\t\t<li class="li-link active"><a href="'+_tag+'/'+url+'">'+_tag+'</a></li>\n'
-                else: v += '\t\t\t\t<li class="li-link"><a href="'+_tag+'/'+url+'">'+_tag+'</a></li>\n'
+                _tag_encoded = parse.quote(_tag, safe='')
+                if _tag == tag: v += '\t\t\t\t<li class="li-link active"><a href="'+_tag_encoded+'/'+url+'">'+_tag+'</a></li>\n'
+                else: v += '\t\t\t\t<li class="li-link"><a href="'+_tag_encoded+'/'+url+'">'+_tag+'</a></li>\n'
             v += '\t\t\t</ul></li>\n'
     v += '\t</ul></li>\n'
 
 data['versions'] = v
 
+title_suffix = project.capitalize()+' source code ('+tag+') - Bootlin'
+
 if mode == 'source':
-    p2 = ''
-    p3 = path.split('/') [1:]
+    path_split = path.split('/')[1:]
+    path_temp = ''
     links = []
-    for p in p3:
-        p2 += '/'+p
-        links.append('<a href="'+version+'/source'+p2+'">'+p+'</a>')
+    for p in path_split:
+        path_temp += '/'+p
+        links.append('<a href="'+version+'/source'+path_temp+'">'+p+'</a>')
 
     if links:
         data['breadcrumb'] += '/'.join(links)
 
     data['ident'] = ident
-    data['title'] = project.capitalize()+' source code: '+path[1:]+' ('+tag+') - Bootlin'
+    # Create titles like this:
+    # root path: "Linux source code (v5.5.6) - Bootlin"
+    # first level path: "arch - Linux source code (v5.5.6) - Bootlin"
+    # deeper paths: "Makefile - arch/um/Makefile - Linux source code (v5.5.6) - Bootlin"
+    data['title'] = ('' if path == ''
+                     else path_split[0]+' - ' if len(path_split) == 1
+                     else path_split[-1]+' - '+'/'.join(path_split)+' - ') \
+            +title_suffix
 
     lines = ['null - -']
 
@@ -276,9 +287,9 @@ if mode == 'source':
 
 
 elif mode == 'ident':
-    data['title'] = project.capitalize()+' source code: '+ident+' identifier ('+tag+') - Bootlin'
+    data['title'] = ident+' identifier - '+title_suffix
 
-    symbol_definitions, symbol_references = query('ident', tag, ident)
+    symbol_definitions, symbol_references, symbol_doccomments_UNUSED = query('ident', tag, ident)
 
     print('<div class="lxrident">')
     if len(symbol_definitions):

@@ -1,5 +1,15 @@
+# Generated files
 __pycache__
+tags
+/.cache/
+
+# Web-specific
 http/images
 http/*.html
 http/favicon.ico
 http/robots.txt
+
+# Editor and other backup files
+*.swp
+*~
+~*
