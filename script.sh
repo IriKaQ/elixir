@@ -4,6 +4,7 @@
 #
 #  Copyright (C) 2017--2020  Mikaël Bouillot
 #  <mikael.bouillot@bootlin.com> and contributors
+#  Portions copyright (c) 2019 D3 Engineering, LLC
 #
 #  Elixir is free software: you can redistribute it and/or modify
 #  it under the terms of the GNU Affero General Public License as published by
@@ -29,6 +30,7 @@ script_path=`realpath "$0"`
 cd `dirname "$script_path"`
 script_dir=`pwd`
 cd "$cur_dir"
+dts_comp_support=0 # DT bindings compatible strings support (disable by default)
 
 version_dir()
 {
@@ -63,7 +65,7 @@ list_tags_h()
 
 get_latest()
 {
-    git tag | version_dir | grep -v '\-rc' | sort -V | tail -n 1
+    git tag | version_dir | grep -v '\-rc' | sort -V | tail -n $(($opt1 + 1)) | head -1
 }
 
 get_type()
@@ -87,7 +89,7 @@ get_dir()
 {
         v=`echo $opt1 | version_rev`
         git ls-tree -l "$v:`denormalize $opt2`" 2>/dev/null |
-        awk '{print $2" "$5" "$4}' |
+        awk '{print $2" "$5" "$4" "$1}' |
         grep -v ' \.' |
         sort -t ' ' -k 1,1r -k 2,2
 }
@@ -101,9 +103,15 @@ tokenize_file()
         ref="$v:`denormalize $opt2`"
     fi
 
+    if [ $opt3 = "D" ]; then #Don't cut around '-' in devicetrees
+        regex='s%((/\*.*?\*/|//.*?\001|[^'"'"']"(\\.|.)*?"|# *include *<.*?>|[^\w-])+)([\w-]+)?%\1\n\4\n%g'
+    else
+        regex='s%((/\*.*?\*/|//.*?\001|[^'"'"']"(\\.|.)*?"|# *include *<.*?>|\W)+)(\w+)?%\1\n\4\n%g'
+    fi
+
     git cat-file blob $ref 2>/dev/null |
     tr '\n' '\1' |
-    perl -pe 's%((/\*.*?\*/|//.*?\001|[^'"'"']"(\\.|.)*?"|# *include *<.*?>|\W)+)(\w+)?%\1\n\4\n%g' |
+    perl -pe "$regex" |
     head -n -1
 }
 
@@ -137,11 +145,54 @@ untokenize()
 
 parse_defs()
 {
+    case $opt3 in
+    "C")
+        parse_defs_C
+        ;;
+    "K")
+        parse_defs_K
+        ;;
+    "D")
+        parse_defs_D
+        ;;
+    esac
+}
+
+parse_defs_C()
+{
     tmp=`mktemp -d`
     full_path=$tmp/$opt2
     git cat-file blob "$opt1" > "$full_path"
-    ctags -x --c-kinds=+p-m "$full_path" |
-    grep -av "^operator " |
+
+    # Use ctags to parse most of the defs
+    ctags -x --kinds-c=+p+x --extras='-{anonymous}' "$full_path" |
+    grep -avE "^operator |CONFIG_" |
+    awk '{print $1" "$2" "$3}'
+
+    # Parse function macros, e.g., in .S files
+    perl -ne '/^\s*ENTRY\((\w+)\)/ and print "$1 function $.\n"' "$full_path"
+
+    rm "$full_path"
+    rmdir $tmp
+}
+
+parse_defs_K()
+{
+    tmp=`mktemp -d`
+    full_path=$tmp/$opt2
+    git cat-file blob "$opt1" > "$full_path"
+    ctags -x --language-force=kconfig --kinds-kconfig=c --extras-kconfig=-{configPrefixed} "$full_path" |
+    awk '{print "CONFIG_"$1" "$2" "$3}'
+    rm "$full_path"
+    rmdir $tmp
+}
+
+parse_defs_D()
+{
+    tmp=`mktemp -d`
+    full_path=$tmp/$opt2
+    git cat-file blob "$opt1" > "$full_path"
+    ctags -x --language-force=dts "$full_path" |
     awk '{print $1" "$2" "$3}'
     rm "$full_path"
     rmdir $tmp
@@ -155,6 +206,11 @@ parse_docs()
     "$script_dir/find-file-doc-comments.pl" "$tmpfile" || exit "$?"
 
     rm -rf "$tmpfile"
+}
+
+dts_comp()
+{
+    echo $dts_comp_support
 }
 
 project=$(basename `dirname $LXR_REPO_DIR`)
@@ -171,6 +227,7 @@ test $# -gt 0 || set help
 cmd=$1
 opt1=$2
 opt2=$3
+opt3=$4
 shift
 
 denormalize()
@@ -227,6 +284,10 @@ case $cmd in
 
     parse-docs)
         parse_docs
+        ;;
+
+    dts-comp)
+        dts_comp
         ;;
 
     help)

@@ -4,19 +4,32 @@
 makefiledir = []
 
 def keep_makefiledir(m):
-    makefiledir.append(m.group(1))
-    return '__KEEPMAKEFILEDIR__' + str(len(makefiledir)) + '/' + m.group(2)
+    dir_name = os.path.dirname(path)
+
+    if dir_name != '/':
+        dir_name += '/'
+
+    if query('exist', tag, dir_name + m.group(1) + '/Makefile'):
+        makefiledir.append(m.group(1))
+        return '__KEEPMAKEFILEDIR__' + encode_number(len(makefiledir)) + '/' + m.group(2)
+    else:
+        return m.group(0)
 
 def replace_makefiledir(m):
-    w = makefiledir[int(m.group(1)) - 1]
-    return '<a href="'+version+'/source'+os.path.dirname(path)+'/'+w+'/Makefile">'+w+'/</a>'
+    w = makefiledir[decode_number(m.group(1)) - 1]
+    dir_name = os.path.dirname(path)
+    
+    if dir_name != '/':
+        dir_name += '/'
+
+    return '<a href="'+version+'/source'+dir_name+w+'/Makefile">'+w+'/</a>'
 
 makefiledir_filters = {
                 'case': 'filename',
                 'match': {'Makefile'},
-                'prerex': '([-\w]+)/(\s*|$)',
+                'prerex': '(?<=\s)([-\w/]+)/(\s+|$)',
                 'prefunc': keep_makefiledir,
-                'postrex': '__KEEPMAKEFILEDIR__(\d+)/',
+                'postrex': '__KEEPMAKEFILEDIR__([A-J]+)/',
                 'postfunc': replace_makefiledir
                 }
 

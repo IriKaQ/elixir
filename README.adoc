@@ -18,16 +18,17 @@ duplicating work and data. It has a straightforward data structure
 
 You can see it in action on https://elixir.bootlin.com/
 
-NOTE: this documentation applies to version 1.0 of Elixir.
+NOTE: this documentation applies to version 2.0 of Elixir.
 
 toc::[]
 
 = Requirements
 
 * Python >= 3.6
+* Git >= 1.9
 * The Jinja2 and Pygments (>= 2.2) Python libraries
 * Berkeley DB (and its Python binding)
-* Exuberant Ctags
+* Universal Ctags
 * Perl (for non-greedy regexes and automated testing)
 * Falcon and `mod_wsgi` (for the REST API)
 
@@ -79,7 +80,7 @@ For Debian
 ____
 
 ----
-sudo apt install python3 python3-jinja2 python3-pygments python3-bsddb3 python3-falcon python3-pytest exuberant-ctags perl git apache2 libapache2-mod-wsgi-py3
+sudo apt install python3 python3-jinja2 python3-pygments python3-bsddb3 python3-falcon python3-pytest universal-ctags perl git apache2 libapache2-mod-wsgi-py3 libjansson4
 ----
 
 To enable the REST API, follow the installation instructions on https://github.com/GrahamDumpleton/mod_wsgi[`mod_wsgi`]
@@ -90,20 +91,42 @@ to know what packages Elixir needs in your favorite distribution.
 
 == Special dependencies
 
-=== Device Tree Source syntax highlighting
+=== Device Tree and Kconfig Source syntax highlighting
 
 The service on https://elixir.bootlin.com relies on a modified version of https://pygments.org/[Pygments],
-to enable syntax highlighting on Device Tree Source (DTS) files.
+to enable syntax highlighting on Device Tree Source (DTS) files and on all Kconfig files.
 
 The changes have been sent upstream and should appear in future distributions.
 
 In the meantime, you can either rebuild this package from its source on
-https://github.com/MaximeChretien/pygments/tree/devicetree-lexer[GitHub], or download this
-https://bootlin.com/pub/elixir/Pygments-2.6.1.devicetree-py3-none-any.whl[binary module]
+https://github.com/MaximeChretien/pygments/tree/dev[GitHub], or download this
+https://bootlin.com/pub/elixir/Pygments-2.6.1.elixir-py3-none-any.whl[binary module]
 and install it as follows:
 
 ----
-sudo pip3-install Pygments-2.6.1.devicetree-py3-none-any.whl
+sudo pip3 install Pygments-2.6.1.elixir-py3-none-any.whl
+----
+
+=== Kconfig identifiers support
+
+The service on https://elixir.bootlin.com relies on a modified version of https://ctags.io/[Universal-ctags],
+to enable indexing of Kconfig identifiers.
+
+The changes have been sent upstream and should appear in future distributions.
+
+In the meantime, you can either rebuild this package from its source on
+ https://github.com/universal-ctags/ctags[GitHub], or download this
+https://bootlin.com/pub/elixir/universal-ctags_0+git20200526-0ubuntu1_amd64.deb[binary package]
+and install it as follows:
+
+----
+sudo dpkg -i universal-ctags_0+git20200526-0ubuntu1_amd64.deb
+----
+
+Then tell `apt` to hold this package and block future updates of the normal package:
+
+----
+sudo apt-mark hold universal-ctags
 ----
 
 == Download Elixir Project
@@ -153,6 +176,14 @@ git remote add stable git://git.kernel.org/pub/scm/linux/kernel/git/stable/linux
 git fetch stable
 ----
 
+Then, you can also declare an `history` remote branch corresponding to the old Linux versions not present in the other repos, to get all the old version still available:
+
+----
+cd repo
+git remote add history https://github.com/bootlin/linux-history.git
+git fetch history --tags
+----
+
 Feel free to add more remote branches in this way, as Elixir will consider tags from all remote branches.
 
 == First Test
@@ -165,7 +196,7 @@ cd /usr/local/elixir/
 == Create Database
 
 ----
-./update.py
+./update.py <number of threads (default 10 | min 5)>
 ----
 
 ____
@@ -176,7 +207,7 @@ ____
 
 Verify that the queries work:
 
- $ ./query.py v4.10 ident raw_spin_unlock_irq
+ $ ./query.py v4.10 ident raw_spin_unlock_irq C
  $ ./query.py v4.10 file /kernel/sched/clock.c
 
 NOTE: `v4.10` can be replaced with any other tag.
@@ -238,7 +269,8 @@ AddHandler cgi-script .py
 
     RewriteEngine on
     RewriteRule "^/$" "/linux/latest/source" [R]
-    RewriteRule "^/(?!api).*/(source|ident|search)" "/web.py" [PT]
+    RewriteRule "^/(?!api|acp).*/(source|ident|search)" "/web.py" [PT]
+    RewriteRule "^/acp" "/autocomplete.py" [PT]
 </VirtualHost>
 ----
 
@@ -261,7 +293,8 @@ Here's a sample configuration for lighthttpd:
 ----
 server.document-root = server_root + "/elixir/http"
 url.redirect = ( "^/$" => "/linux/latest/source" )
-url.rewrite  = ( "^/.*/(source|ident|search)" =>  "/web.py/$1")
+url.rewrite  = ( "^/(?!api|acp).*/(source|ident|search)" =>  "/web.py/$1")
+url.rewrite  = ( "^/acp" =>  "/autocomplete.py")
 setenv.add-environment = ( "PYTHONIOENCODING" => "utf-8",
     "LXR_PROJ_DIR" => "/path/to/elixir-data" )
 ----
@@ -272,10 +305,10 @@ After configuring httpd, you can test the API usage:
 
 == ident query
 
-Send a get request to `/api/ident/<Project>/<Ident>?version=<version>`.
+Send a get request to `/api/ident/<Project>/<Ident>?version=<version>&family=<family>`.
 For example:
 
- curl http://127.0.0.1/api/ident/barebox/cdev?version=latest
+ curl http://127.0.0.1/api/ident/barebox/cdev?version=latest&family=C
 
 The response body is of the following structure:
 
@@ -304,6 +337,9 @@ as a front-end to reduce the load on the server running the Elixir code.
 To keep your Elixir databases up to date and index new versions that are released,
 we're proposing to use a script like `utils/update-elixir-data` which is called
 through a daily cron job.
+
+You can set `$ELIXIR_THREADS` if you want to change the number of threads used by
+update.py for indexing (default is 10 and minimum is 5).
 
 == Keeping git repository disk usage under control
 
@@ -405,7 +441,7 @@ Depending on how you want to show the available versions on the Elixir pages,
 you may have to apply substitutions to each tag string, for example to add
 a `v` prefix if missing, for consistency with how other project versions are
 shown. You may also decide to ignore specific tags. All this can be done
-by redefining the default `list_tags()` function in a new `project/<projectname>.sh`
+by redefining the default `list_tags()` function in a new `projects/<projectname>.sh`
 file. Here's an example (`projects/zephyr.sh` file):
 
  list_tags()
@@ -448,10 +484,13 @@ the most recent versions:
 
 If needed, customize the `get_latest()` function.
 
+If you want to enable support for `compatible` properties in Devicetree files,
+add `dts_comp_support=1` at the beginning of `projects/<projectname>.sh`.
+
 You are now ready to generate Elixir's database for your
 new project:
 
- ./update.py
+ ./update.py <number of threads (default 10 | min 5)>
 
 You can then check that Elixir works through your http server.
 
@@ -484,3 +523,8 @@ of AGPLv3] indicates that its terms "effectively consist of the terms of GPLv3"
 plus the network-use paragraph.  Therefore, the developers have a good-faith
 belief that licensing these files under AGPLv3 is authorized.  (See also https://github.com/Freemius/wordpress-sdk/issues/166#issuecomment-310561976[this
 issue comment] for another example of a similar situation.)
+
+= License
+
+Elixir is copyright (c) 2017--2020 its contributors.  It is licensed AGPLv3.
+See the `COPYING` file included with Elixir for details.

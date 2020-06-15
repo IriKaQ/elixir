@@ -2,8 +2,8 @@
 
 #  This file is part of Elixir, a source code cross-referencer.
 #
-#  Copyright (C) 2017  Mikaël Bouillot
-#  <mikael.bouillot@bootlin.com>
+#  Copyright (C) 2017--2020 Mikaël Bouillot <mikael.bouillot@bootlin.com>
+#  and contributors
 #
 #  Elixir is free software: you can redistribute it and/or modify
 #  it under the terms of the GNU Affero General Public License as published by
@@ -26,9 +26,13 @@ import os
 import os.path
 import errno
 
+deflist_regex = re.compile(b'(\d*)(\w)(\d*)(\w),?')
+deflist_macro_regex = re.compile('\dM\d+(\w)')
+
 ##################################################################################
 
 defTypeR = {
+    'c': 'config',
     'd': 'define',
     'e': 'enum',
     'E': 'enumerator',
@@ -40,7 +44,8 @@ defTypeR = {
     's': 'struct',
     't': 'typedef',
     'u': 'union',
-    'v': 'variable' }
+    'v': 'variable',
+    'x': 'externvar'}
 
 defTypeD = {v: k for k, v in defTypeR.items()}
 
@@ -50,31 +55,48 @@ maxId = 999999999
 
 class DefList:
     '''Stores associations between a blob ID, a type (e.g., "function"),
-        and a line number.'''
-    def __init__(self, data=b''):
-        self.data = data
+        a line number and a file family.
+        Also stores in which families the ident exists for faster tests.'''
+    def __init__(self, data=b'#'):
+        self.data, self.families = data.split(b'#')
 
     def iter(self, dummy=False):
-        for p in self.data.split(b','):
-            p = re.search(b'(\d*)(\w)(\d*)', p)
-            id, type, line = p.groups()
+        # Get all element in a list of sublists and sort them
+        entries = deflist_regex.findall(self.data)
+        entries.sort(key=lambda x:int(x[0]))
+        for id, type, line, family in entries:
             id = int(id)
             type = defTypeR [type.decode()]
             line = int(line)
-            yield(id, type, line)
+            family = family.decode()
+            yield(id, type, line, family)
         if dummy:
-            yield(maxId, None, None)
+            yield(maxId, None, None, None)
 
-    def append(self, id, type, line):
+    def append(self, id, type, line, family):
         if type not in defTypeD:
             return
-        p = str(id) + defTypeD[type] + str(line)
+        p = str(id) + defTypeD[type] + str(line) + family
         if self.data != b'':
             p = ',' + p
         self.data += p.encode()
+        self.add_family(family)
 
     def pack(self):
-        return self.data
+        return self.data + b'#' + self.families
+
+    def add_family(self, family):
+        family = family.encode()
+        if not family in self.families.split(b','):
+            if self.families != b'':
+                family = b',' + family
+            self.families += family
+
+    def get_families(self):
+        return self.families.decode().split(',')
+
+    def get_macros(self):
+        return deflist_macro_regex.findall(self.data.decode()) or ''
 
 class PathList:
     '''Stores associations between a blob ID and a file path.
@@ -83,8 +105,7 @@ class PathList:
         self.data = data
 
     def iter(self, dummy=False):
-        for p in self.data.split(b'\n'):
-            if (p == b''): continue
+        for p in self.data.split(b'\n')[:-1]:
             id, path = p.split(b' ',maxsplit=1)
             id = int(id)
             path = path.decode()
@@ -93,33 +114,32 @@ class PathList:
             yield(maxId, None)
 
     def append(self, id, path):
-        p = str(id).encode() + b' ' + path
-        self.data = self.data + p + b'\n'
+        p = str(id).encode() + b' ' + path + b'\n'
+        self.data += p
 
     def pack(self):
         return self.data
 
 class RefList:
-    '''Stores a mapping from blob ID to list of lines.'''
+    '''Stores a mapping from blob ID to list of lines
+        and the corresponding family.'''
     def __init__(self, data=b''):
         self.data = data
 
     def iter(self, dummy=False):
-        size = len(self.data)
-        s = BytesIO(self.data)
-        while s.tell() < size:
-            line = s.readline()
-            line = line [:-1]
-            b,c = line.split(b':')
+        # Split all elements in a list of sublists and sort them
+        entries = [x.split(b':') for x in self.data.split(b'\n')[:-1]]
+        entries.sort(key=lambda x:int(x[0]))
+        for b, c, d in entries:
             b = int(b.decode())
             c = c.decode()
-            yield(b, c)
-        s.close()
+            d = d.decode()
+            yield(b, c, d)
         if dummy:
-            yield(maxId, None)
+            yield(maxId, None, None)
 
-    def append(self, id, lines):
-        p = str(id) + ':' + lines + '\n'
+    def append(self, id, lines, family):
+        p = str(id) + ':' + lines + ':' + family + '\n'
         self.data += p.encode()
 
     def pack(self):
@@ -148,6 +168,9 @@ class BsdDB:
         p = self.ctype(p)
         return p
 
+    def get_keys(self):
+        return self.db.keys()
+
     def put(self, key, val, sync=False):
         key = autoBytes(key)
         val = autoBytes(val)
@@ -158,7 +181,7 @@ class BsdDB:
             self.db.sync()
 
 class DB:
-    def __init__(self, dir, readonly=True):
+    def __init__(self, dir, readonly=True, dtscomp=False):
         if os.path.isdir(dir):
             self.dir = dir
         else:
@@ -178,4 +201,7 @@ class DB:
         self.defs = BsdDB(dir + '/definitions.db', ro, DefList)
         self.refs = BsdDB(dir + '/references.db', ro, RefList)
         self.docs = BsdDB(dir + '/doccomments.db', ro, RefList)
+        if dtscomp:
+            self.comps = BsdDB(dir + '/compatibledts.db', ro, RefList)
+            self.comps_docs = BsdDB(dir + '/compatibledts_docs.db', ro, RefList)
             # Use a RefList in case there are multiple doc comments for an identifier

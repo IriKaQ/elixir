@@ -43,7 +43,7 @@ use parent 'Exporter';
 our (@EXPORT, @EXPORT_OK, %EXPORT_TAGS);
 BEGIN {
     @EXPORT = qw(sibling_abs_path find_program run_program ok_or_die
-                run_produces_ok MUST_SUCCEED);
+                run_produces_ok http_request_ok MUST_SUCCEED);
     @EXPORT_OK = qw(line_mark_string);
     %EXPORT_TAGS = (
         all => [@EXPORT, @EXPORT_OK],
@@ -87,45 +87,91 @@ sub sibling_abs_path {
 Looks for a program in the parent directory of this script.
 Usage:
 
-    $path = find_program('program name')
+    $path = find_program(['subdir', ]'program name')
 
 =cut
 
 sub find_program {
-    my $program = shift;
+    my $pgm_file = pop;  # Last arg
+    my @pgm_dirs = @_;  # Any args before the last are additional dirs.
 
-    my ($vol, $directories, $file) = File::Spec->splitpath($FindBin::Bin, 1);   # 1 => is a dir
+    my ($my_vol, $my_dirs, undef) = File::Spec->splitpath($FindBin::Bin, 1);   # 1 => is a dir
 
     # Go up to the parent of the directory holding this file
-    my @dirs = File::Spec->splitdir($directories);
-    die "Cannot run from the root directory" unless @dirs >= 2;
-    pop @dirs;
-    $directories = File::Spec->catdir(@dirs);
+    my @my_dirs = File::Spec->splitdir($my_dirs);
+    die "Cannot run from the root directory" unless @my_dirs >= 2;
+    pop @my_dirs;
+    my $dest_dirs = File::Spec->catdir(@my_dirs, @pgm_dirs);
 
-    return File::Spec->catpath($vol, $directories, $program);
+    return File::Spec->catpath($my_vol, $dest_dirs, $pgm_file);
 } #find_program()
 
 =head2 run_program
 
-Print a command, then run it.  Returns true if system() and the command
-succeed, false otherwise.  Usage:
+Print a command, then run it.  Can be used three ways:
 
-    $ok = run_program('program', 'arg1', ...)
+=over
+
+=item In void context
+
+Returns if system() and the command succeed, dies otherwise.  Usage:
+
+    run_program('program', 'arg1', ...);
+
+=item In scalar context
+
+Returns true if system() and the command succeed, false otherwise.  Usage:
+
+    my $ok = run_program('program', 'arg1', ...);
+
+=item In list context
+
+Returns the exit status, stdout, and stderr.  Usage:
+
+    my ($exit_status, $lrStdout, $lrStderr) = run_program('program', 'arg1', ...);
+        # Returns the shell exit status, stdout text, and stderr text.
+
+C<$lrStdout> and C<$lrStderr> are references to the lists of output lines
+on the respective handles.
+
+C<$exit_status> is C<128+signal> if the process was killed by C<signal>,
+for consistency with bash (L<https://tldp.org/LDP/abs/html/exitcodes.html>).
+
+=back
 
 =cut
 
+sub _run_and_capture;   # forward
+sub _check_queries;     # forward
+
 sub run_program {
+
+    if(wantarray) {
+        goto &_run_and_capture;
+    }
+
+    my $errmsg;
+
     diag "Running @_";
     my $status = system(@_);
+
     if ($status == -1) {
-        diag "failed to execute $_[0]: $!";
+        $errmsg = "failed to execute $_[0]: $!";
     }
     elsif ($status & 127) {
-        diag sprintf "$_[0] died with signal %d, %s coredump\n",
+        $errmsg = sprintf "$_[0] died with signal %d, %s coredump\n",
             ($status & 127),  ($status & 128) ? 'with' : 'without';
     }
+    elsif($status != 0) {
+        $errmsg = sprintf "$_[0] exited with value %d\n", $status >> 8;
+    }
     else {
-        diag sprintf "$_[0] exited with value %d\n", $status >> 8;
+        diag "$_[0] reported success";
+    }
+
+    if($errmsg) {
+        die $errmsg unless defined wantarray;
+        diag $errmsg;
     }
 
     return($status == 0);
@@ -154,7 +200,7 @@ EOT
 Run a program and check whether it produces expected output.
 Usage:
 
-    run_produces_ok($desc, \@program_and_args, \@expected_regexes,
+    run_produces_ok($desc, \@program_and_args, \@conditions,
                     <optional> $mustSucceed, <optional> $printOutput)
 
 The test passes if each condition in C<@conditions> is true.
@@ -200,14 +246,16 @@ the "Documented in" section of the output of C<@program_and_args>.
 
 =cut
 
-sub run_produces_ok {
-    my ($desc, $lrProgram, $lrRegexes, $mustSucceed, $printOutput) = @_;
+# _run_and_capture: run a program and return its exit status and output.
+# Usage:
+#   my ($exit_status, \@stdout, \@stderr) = run_program('program', 'arg1', ...);
 
-    # Run program and capture stdout and stderr
+sub _run_and_capture {
     my ($in , $out, $err);      # Filehandles
     $err = Symbol::gensym;
-    diag "Running @$lrProgram";
-    my $pid = open3($in, $out, $err, @$lrProgram);
+
+    diag "Running @_";
+    my $pid = open3($in, $out, $err, @_);
 
     my (@outlines, @errlines);  # Captured output
     my $s = IO::Select->new;
@@ -231,23 +279,59 @@ sub run_produces_ok {
     }
 
     waitpid $pid, 0;
-    my $exit_status = $? >> 8;
+    my $exit_status = $?;
+
+    $exit_status = ($exit_status & 127) + 128 if $exit_status & 127;   # Killed by signal
+
+    return ($exit_status, \@outlines, \@errlines);
+} #_run_and_capture()
+
+sub run_produces_ok {
+    my ($desc, $lrProgram, $lrConditions, $mustSucceed, $printOutput) = @_;
+
+    my ($exit_status, $outlines, $errlines) = _run_and_capture(@$lrProgram);
+
+    _check_queries($desc, $lrConditions, $mustSucceed, $printOutput, $exit_status, $outlines, $errlines);
+} #run_produces_ok()
+
+sub _check_queries {
+    my ($desc, $lrConditions, $mustSucceed, $printOutput, $exit_status, $lrStdout, $lrStderr) = @_;
+
+    my @outlines = @$lrStdout;
+    my @errlines = @$lrStderr;
 
     if ($printOutput) {
         diag "@outlines";
     }
 
+    # Check for and report Python errors
+    foreach(@outlines, @errlines) {
+        if (/^.*?(\S+)\s+contains the description of this error/) {
+            my $logfn = $1;
+
+            no autodie;
+            open my $logfh, '<', $logfn
+                or warn("Could not open Python log file $logfn: $!"), last;
+            my $logtext = do { local $/; <$logfh> };
+            close $logfh;
+
+            diag "Python error log $logfn:\n$logtext";
+            last;
+        }
+    }
+
     # Basic checks
     if($mustSucceed) {
-        eval line_mark_string 1, <<'EOT';
+        eval line_mark_string 2, <<'EOT';
         cmp_ok($exit_status, '==', 0, "$desc: exit status 0");
         cmp_ok(@errlines, '==', 0, "$desc: stderr empty");
 EOT
+        die $@ if $@;
     }
 
     # Check regexes
     my %query_py_output;    # filled in only if we see a def/ref/doc
-    for my $entry (@$lrRegexes) {
+    for my $entry (@$lrConditions) {
         my ($re, $negated, $source) = _parse_condition($entry);
 
         # Parse query.py output if we need it and haven't done so
@@ -267,11 +351,41 @@ EOT
         $test .= ($negated ? ' excludes ' : ' includes ') . "\Q$re\E" . '");';
 
         # Run it
-        #diag "Running $test";
-        eval line_mark_string 1, $test;
+        eval line_mark_string 2, $test;
+        die $@ if $@;
     } #foreach $entry
 
 } #run_produces_ok()
+
+=head2 http_request_ok
+
+Run C<web.py> against a given path and check whether it produces expected
+output.  Usage:
+
+    http_request_ok($desc, $tenv, $path, \@conditions, <optional> $printOutput)
+
+The test passes if the HTTP request succeeds, and if each condition in
+C<@conditions> is true of the result (headers and body).
+
+C<$tenv> is a L<TestEnvironment>.
+
+C<$path> is the path part of the URL, e.g., C</testproj/latest/source>.
+
+See L</run_produces_ok> for C<@conditions>.
+
+If C<$printOutput> is true, prints the output of C<@program_and_args>.
+
+=cut
+
+sub http_request_ok {
+    my ($desc, $tenv, $path, $lrConditions, $printOutput) = @_;
+    die "Invalid args" unless $desc && ref $tenv && eval { @$lrConditions };
+
+    my ($exit_status, $lrStdout, $lrStderr) = $tenv->make_web_request($path);
+
+    _check_queries($desc, $lrConditions, MUST_SUCCEED, $printOutput,
+        $exit_status, $lrStdout, $lrStderr);
+} #http_request_ok()
 
 =head1 INTERNAL FUNCTIONS
 
@@ -290,16 +404,17 @@ sub _parseq {
     my $list;
     foreach(@_) {
         chomp;
-        if($_ eq 'Symbol Definitions:') {
+        if(/(?:^Symbol Definitions:$)|\bDefined in \d+/) {
             $list = 'def';
             next;
-        } elsif($_ eq 'Symbol References:') {
+        } elsif(/(?:^Symbol References:$)|\bReferenced in \d+/) {
             $list = 'ref';
             next;
-        } elsif($_ eq 'Documented in:') {
+        } elsif(/(?:^Documented in:$)|\bDocumented in \d+/) {
             $list = 'doc';
             next;
         }
+        next unless $list;
 
         #diag "Adding `$_' to list $list";
         push @{$retval{$list}}, $_;
@@ -410,7 +525,8 @@ EOT
 
 =head2 import
 
-Set up.  Called automatically.
+Set up.  Called automatically.  Activates L<strict> and L<warnings>
+in the caller.
 
 =cut
 

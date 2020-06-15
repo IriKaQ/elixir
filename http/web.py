@@ -1,9 +1,9 @@
-#!/usr/bin/python3
+#!/usr/bin/env python3
 
 #  This file is part of Elixir, a source code cross-referencer.
 #
-#  Copyright (C) 2017  Mikaël Bouillot
-#  <mikael.bouillot@bootlin.com>
+#  Copyright (C) 2017--2020 Mikaël Bouillot <mikael.bouillot@bootlin.com>
+#  and contributors.
 #
 #  Elixir is free software: you can redistribute it and/or modify
 #  it under the terms of the GNU Affero General Public License as published by
@@ -48,14 +48,20 @@ status = 200
 
 url = os.environ.get('REQUEST_URI') or os.environ.get('SCRIPT_URL')
 # Split the URL into its components (project, version, cmd, arg)
-m = search('^/([^/]*)/([^/]*)/([^/]*)(.*)$', url)
+m = search('^/([^/]*)/([^/]*)(?:/([^/]))?/([^/]*)(.*)$', url)
 
 if m:
     project = m.group(1)
     version = m.group(2)
     version_decoded = parse.unquote(version)
-    cmd = m.group(3)
-    arg = m.group(4)
+    family = m.group(3)
+    cmd = m.group(4)
+    arg = m.group(5)
+
+    if family == None:
+        family = 'C'
+
+    search_family = 'A'
 
     basedir = os.environ['LXR_PROJ_DIR']
     datadir = basedir + '/' + project + '/data'
@@ -77,18 +83,21 @@ if m:
             url = 'source'+path
 
     elif cmd == 'ident':
+        search_family = family
+
         ident = arg[1:]
         form = cgi.FieldStorage()
         ident2 = form.getvalue('i')
+        family2 = form.getvalue('f')
         if ident == '' and ident2:
             status = 302
             ident2 = parse.quote(ident2.strip())
-            location = '/'+project+'/'+version+'/ident/'+ident2
+            location = '/'+project+'/'+version+'/'+family2+'/ident/'+ident2
         else:
             mode = 'ident'
-            if not(ident and search('^[A-Za-z0-9_-]*$', ident)):
+            if not(ident and search('^[A-Za-z0-9_\$\.%-]*$', ident)):
                 ident = ''
-            url = 'ident/'+ident
+            url = family + '/ident/' + ident
     else:
         status = 400
 else:
@@ -119,10 +128,14 @@ import sys
 sys.path = [ sys.path[0] + '/..' ] + sys.path
 from query import query
 
+dts_comp_support = query('dts-comp')
+
 if version_decoded == 'latest':
     tag = query('latest')
 else:
     tag = version_decoded
+
+ident = parse.unquote(ident)
 
 data = {
     'baseurl': '/' + project + '/',
@@ -132,6 +145,7 @@ data = {
     'project': project,
     'projects': projects,
     'ident': ident,
+    'family': search_family,
     'breadcrumb': '<a class="project" href="'+version+'/source">/</a>'
 }
 
@@ -186,7 +200,7 @@ if mode == 'source':
                      else path_split[-1]+' - '+'/'.join(path_split)+' - ') \
             +title_suffix
 
-    lines = ['null - -']
+    lines = ['null - - -']
 
     type = query('type', tag, path)
     if len(type) > 0:
@@ -200,12 +214,12 @@ if mode == 'source':
 
     if type == 'tree':
         if path != '':
-            lines[0] = 'back - -'
+            lines[0] = 'back - - -'
 
         print('<div class="lxrtree">')
         print('<table><tbody>\n')
         for l in lines:
-            type, name, size = l.split(' ')
+            type, name, size, perm = l.split(' ')
 
             if type == 'null':
                 continue
@@ -216,6 +230,19 @@ if mode == 'source':
             elif type == 'blob':
                 size = size+' bytes'
                 path2 = path+'/'+name
+
+                if perm == '120000':
+                    # 120000 permission means it's a symlink
+                    # So we need to handle that correctly
+                    dir_name = os.path.dirname(path)
+                    rel_path = query('file', tag, path2)
+
+                    if dir_name != '/':
+                        dir_name += '/'
+
+                    path2 = os.path.abspath(dir_name + rel_path)
+
+                    name = name + ' -> ' + path2
             elif type == 'back':
                 size = ''
                 path2 = os.path.dirname(path[:-1])
@@ -236,9 +263,10 @@ if mode == 'source':
         import pygments.lexers
         import pygments.formatters
 
-        filename, extension = os.path.splitext(path)
+        fdir, fname = os.path.split(path)
+        filename, extension = os.path.splitext(fname)
         extension = extension[1:].lower()
-        filename = os.path.basename(filename)
+        family = query('family', fname)
 
         # Source common filter definitions
         os.chdir('filters')
@@ -253,7 +281,10 @@ if mode == 'source':
         # Apply filters
         for f in filters:
             c = f['case']
-            if (c == 'any' or (c == 'filename' and filename in f['match']) or (c == 'extension' and extension in f['match'])):
+            if (c == 'any' or
+                (c == 'filename' and filename in f['match']) or
+                (c == 'extension' and extension in f['match']) or
+                (c == 'path' and fdir.startswith(tuple(f['match'])))):
 
                 apply_filter = True
 
@@ -280,7 +311,11 @@ if mode == 'source':
 
         for f in filters:
             c = f['case']
-            if (c == 'any' or (c == 'filename' and filename in f['match']) or (c == 'extension' and extension in f['match'])):
+            if (c == 'any' or
+                (c == 'filename' and filename in f['match']) or
+                (c == 'extension' and extension in f['match']) or
+                (c == 'path' and fdir.startswith(tuple(f['match'])))):
+
                 result = sub(f ['postrex'], f ['postfunc'], result)
 
         print('<div class="lxrcode">' + result + '</div>')
@@ -289,44 +324,97 @@ if mode == 'source':
 elif mode == 'ident':
     data['title'] = ident+' identifier - '+title_suffix
 
-    symbol_definitions, symbol_references, symbol_doccomments_UNUSED = query('ident', tag, ident)
+    symbol_definitions, symbol_references, symbol_doccomments = query('ident', tag, ident, family)
 
     print('<div class="lxrident">')
-    if len(symbol_definitions):
-        print('<h2>Defined in '+str(len(symbol_definitions))+' files:</h2>')
-        print('<ul>')
-        for symbol_definition in symbol_definitions:
-            print('<li><a href="{v}/source/{f}#L{n}"><strong>{f}</strong>, line {n} <em>(as a {t})</em></a>'.format(
-                v=version, f=symbol_definition.path, n=symbol_definition.line, t=symbol_definition.type
-            ))
-        print('</ul>')
+    if len(symbol_definitions) or len(symbol_references):
+        if len(symbol_definitions):
+            print('<h2>Defined in '+str(len(symbol_definitions))+' files:</h2>')
+            print('<ul>')
+            for symbol_definition in symbol_definitions:
+                ln = str(symbol_definition.line).split(',')
+                if len(ln) == 1:
+                    n = ln[0]
+                    print('<li><a href="{v}/source/{f}#L{n}"><strong>{f}</strong>, line {n} <em>(as a {t})</em></a>'.format(
+                        v=version, f=symbol_definition.path, n=n, t=symbol_definition.type
+                    ))
+                else:
+                    if len(symbol_definitions) > 100:    # Concise display
+                        n = len(ln)
+                        print('<li><a href="{v}/source/{f}#L{l}"><strong>{f}</strong>, <em>{n} times</em> <em>(as a {t})</em></a>'.format(
+                            v=version, f=symbol_definition.path, n=n, t=symbol_definition.type, l=ln[0]
+                        ))
+                    else:    # Verbose display
+                        print('<li><a href="{v}/source/{f}#L{n}"><strong>{f}</strong> <em>(as a {t})</em></a>'.format(
+                            v=version, f=symbol_definition.path, n=ln[0], t=symbol_definition.type
+                        ))
+                        print('<ul>')
+                        for n in ln:
+                            print('<li><a href="{v}/source/{f}#L{n}">line {n}</a>'.format(
+                                v=version, f=symbol_definition.path, n=n
+                            ))
+                        print('</ul>')
+            print('</ul>')
+        else:
+            print('<h2>No definitions found in the database</h2>')
 
-        print('<h2>Referenced in '+str(len(symbol_references))+' files:</h2>')
-        print('<ul>')
-        for symbol_reference in symbol_references:
-            ln = symbol_reference.line.split(',')
-            if len(ln) == 1:
-                n = ln[0]
-                print('<li><a href="{v}/source/{f}#L{n}"><strong>{f}</strong>, line {n}</a>'.format(
-                    v=version, f=symbol_reference.path, n=n
-                ))
-            else:
-                if len(symbol_references) > 100:    # Concise display
-                    n = len(ln)
-                    print('<li><a href="{v}/source/{f}"><strong>{f}</strong>, <em>{n} times</em></a>'.format(
+        if len(symbol_doccomments):
+            print('<h2>Documented in '+str(len(symbol_doccomments))+' files:</h2>')
+            print('<ul>')
+            for symbol_doccomment in symbol_doccomments:
+                ln = symbol_doccomment.line.split(',')
+                if len(ln) == 1:
+                    n = ln[0]
+                    print('<li><a href="{v}/source/{f}#L{n}"><strong>{f}</strong>, line {n}</a>'.format(
+                        v=version, f=symbol_doccomment.path, n=n
+                    ))
+                else:
+                    if len(symbol_doccomments) > 100:    # Concise display
+                        n = len(ln)
+                        print('<li><a href="{v}/source/{f}#L{l}"><strong>{f}</strong>, <em>{n} times</em></a>'.format(
+                            v=version, f=symbol_doccomment.path, n=n, l=ln[0]
+                        ))
+                    else:    # Verbose display
+                        print('<li><a href="{v}/source/{f}#L{n}"><strong>{f}</strong></a>'.format(
+                            v=version, f=symbol_doccomment.path, n=ln[0]
+                        ))
+                        print('<ul>')
+                        for n in ln:
+                            print('<li><a href="{v}/source/{f}#L{n}">line {n}</a>'.format(
+                                v=version, f=symbol_doccomment.path, n=n
+                            ))
+                        print('</ul>')
+            print('</ul>')
+
+        if len(symbol_references):
+            print('<h2>Referenced in '+str(len(symbol_references))+' files:</h2>')
+            print('<ul>')
+            for symbol_reference in symbol_references:
+                ln = symbol_reference.line.split(',')
+                if len(ln) == 1:
+                    n = ln[0]
+                    print('<li><a href="{v}/source/{f}#L{n}"><strong>{f}</strong>, line {n}</a>'.format(
                         v=version, f=symbol_reference.path, n=n
                     ))
-                else:    # Verbose display
-                    print('<li><a href="{v}/source/{f}#L{n}"><strong>{f}</strong></a>'.format(
-                        v=version, f=symbol_reference.path, n=ln[0]
-                    ))
-                    print('<ul>')
-                    for n in ln:
-                        print('<li><a href="{v}/source/{f}#L{n}">line {n}</a>'.format(
-                            v=version, f=symbol_reference.path, n=n
+                else:
+                    if len(symbol_references) > 100:    # Concise display
+                        n = len(ln)
+                        print('<li><a href="{v}/source/{f}#L{l}"><strong>{f}</strong>, <em>{n} times</em></a>'.format(
+                            v=version, f=symbol_reference.path, n=n, l=ln[0]
                         ))
-                    print('</ul>')
-        print('</ul>')
+                    else:    # Verbose display
+                        print('<li><a href="{v}/source/{f}#L{n}"><strong>{f}</strong></a>'.format(
+                            v=version, f=symbol_reference.path, n=ln[0]
+                        ))
+                        print('<ul>')
+                        for n in ln:
+                            print('<li><a href="{v}/source/{f}#L{n}">line {n}</a>'.format(
+                                v=version, f=symbol_reference.path, n=n
+                            ))
+                        print('</ul>')
+            print('</ul>')
+        else:
+            print('<h2>No references found in the database</h2>')
     else:
         if ident != '':
             print('<h2>Identifier not used</h2>')
@@ -340,7 +428,7 @@ if status == 404:
     realprint('Status: 404 Not Found')
 
 import jinja2
-loader = jinja2.FileSystemLoader(os.path.join(os.path.dirname(__file__), '../templates/'))
+loader = jinja2.FileSystemLoader(os.path.join(os.path.dirname(os.path.realpath(__file__)), '../templates/'))
 environment = jinja2.Environment(loader=loader)
 template = environment.get_template('layout.html')
 

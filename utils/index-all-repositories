@@ -4,10 +4,28 @@
 # - to fix an indexing bug
 # - after database changes
 
+#  This file is part of Elixir, a source code cross-referencer.
+#
+#  Copyright (C) 2019--2020 Michael Opdenacker and contributors
+#
+#  Elixir is free software: you can redistribute it and/or modify
+#  it under the terms of the GNU Affero General Public License as published by
+#  the Free Software Foundation, either version 3 of the License, or
+#  (at your option) any later version.
+#
+#  Elixir is distributed in the hope that it will be useful,
+#  but WITHOUT ANY WARRANTY; without even the implied warranty of
+#  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#  GNU Affero General Public License for more details.
+#
+#  You should have received a copy of the GNU Affero General Public License
+#  along with Elixir.  If not, see <http://www.gnu.org/licenses/>.
+
 index() {
     project=$1
     master=$2
     remote=$3
+    remote2=$4
     echo "Processing project $project..."
 
     export LXR_DATA_DIR=$ELIXIR_ROOT/$project/data
@@ -24,15 +42,22 @@ index() {
         git fetch other
     fi
 
+    if [ "$remote2" != "" ]
+    then
+        cd $LXR_REPO_DIR
+        git remote add other2 $remote2
+        git fetch other2
+    fi
+
     cd $ELIXIR_INSTALL
     ./update.py
 
     # The above takes so much time on the first run that it's worth running a new update
 
     cd $LXR_REPO_DIR
-    git fetch --all
+    git fetch --all --tags
     cd $ELIXIR_INSTALL
-    ./update.py
+    ./update.py $ELIXIR_THREADS
 }
 
 if [ "$ELIXIR_ROOT" = "" ]
@@ -56,7 +81,7 @@ index busybox git://git.busybox.net/busybox &
 index coreboot https://review.coreboot.org/coreboot.git &
 index dpdk git://dpdk.org/dpdk &
 index glibc git://sourceware.org/git/glibc.git &
-index linux git://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git git://git.kernel.org/pub/scm/linux/kernel/git/stable/linux-stable.git &
+index linux git://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git git://git.kernel.org/pub/scm/linux/kernel/git/stable/linux-stable.git https://github.com/bootlin/linux-history.git &
 index llvm https://github.com/llvm/llvm-project.git &
 index mesa https://gitlab.freedesktop.org/mesa/mesa.git &
 index musl git://git.musl-libc.org/musl &
@@ -66,3 +91,4 @@ index u-boot https://gitlab.denx.de/u-boot/u-boot.git &
 index uclibc-ng git://uclibc-ng.org/git/uclibc-ng &
 index zephyr https://github.com/zephyrproject-rtos/zephyr &
 index toybox https://github.com/landley/toybox.git &
+index grub https://git.savannah.gnu.org/git/grub.git &

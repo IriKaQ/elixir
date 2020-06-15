@@ -52,114 +52,128 @@ def unescape(bstr):
         bstr = bstr.replace(a, b)
     return bstr
 
+def decode(byte_object):
+    # decode('ascii') fails on special chars
+    # FIXME: major hack until we handle everything as bytestrings
+    try:
+        return byte_object.decode('utf-8')
+    except UnicodeDecodeError:
+        return byte_object.decode('iso-8859-1')
+
 # List of tokens which we don't want to consider as identifiers
 # Typically for very frequent variable names and things redefined by #define
 # TODO: allow to have per project blacklists
 
 blacklist = (
-    b'if',
-    b'else',
-    b'endif',
+    b'NULL',
+    b'__',
+    b'adapter',
+    b'addr',
+    b'arg',
+    b'attr',
+    b'base',
+    b'bp',
+    b'buf',
+    b'buffer',
+    b'c',
+    b'card',
+    b'char',
+    b'chip',
+    b'cmd',
+    b'codec',
+    b'const',
+    b'count',
+    b'cpu',
+    b'ctx',
+    b'data',
+    b'default',
+    b'define',
+    b'desc',
     b'dev',
-    b'i',
-    b'ret',
+    b'driver',
+    b'else',
+    b'end',
+    b'endif',
+    b'entry',
     b'err',
+    b'error',
+    b'event',
+    b'extern',
+    b'failed',
     b'flags',
     b'h',
-    b'data',
-    b'const',
-    b'skb',
-    b'len',
-    b'name',
-    b'priv',
-    b'p',
-    b'val',
-    b'info',
-    b'buf',
-    b'rc',
-    b'type',
-    b'out',
-    b'cmd',
-    b'port',
-    b'size',
-    b'page',
-    b'tp',
-    b'pdev',
-    b'state',
-    b'addr',
-    b'rdev',
-    b'sk',
-    b'count',
-    b'hw',
-    b'lock',
-    b'error',
-    b'reg',
-    b's',
-    b'id',
-    b'tmp',
-    b'codec',
-    b'req',
-    b'bp',
-    b'c',
-    b'chip',
-    b'r',
-    b'n',
-    b'value',
-    b'start',
-    b'index',
-    b'res',
-    b'regs',
-    b'j',
-    b'base',
-    b'irq',
-    b'x',
-    b'net',
-    b'mode',
-    b'vcpu',
     b'host',
-    b'spec',
-    b'card',
-    b'sb',
-    b'mask',
-    b'list',
-    b'ops',
-    b'next',
-    b'ctx',
-    b'event',
-    b'q',
-    b'attr',
-    b'cpu',
-    b'desc',
-    b'msg',
-    b't',
-    b'entry',
-    b'arg',
+    b'hw',
+    b'i',
+    b'id',
     b'idx',
-    b'end',
-    b'root',
-    b'struct',
-    b'static',
-    b'define',
-    b'NULL',
-    b'sizeof',
-    b'status',
-    b'adapter',
+    b'if',
+    b'index',
+    b'info',
     b'inline',
-    b'offset',
-    b'failed',
-    b'retval',
-    b'buffer',
+    b'int',
+    b'irq',
+    b'j',
+    b'len',
     b'length',
-    b'result',
-    b'extern',
-    b'driver',
+    b'list',
+    b'lock',
+    b'long',
+    b'mask',
+    b'mode',
+    b'msg',
+    b'n',
+    b'name',
+    b'net',
+    b'next',
+    b'offset',
+    b'ops',
+    b'out',
+    b'p',
+    b'page',
+    b'pdev',
+    b'port',
+    b'priv',
     b'ptr',
-    )
+    b'q',
+    b'r',
+    b'rc',
+    b'rdev',
+    b'reg',
+    b'regs',
+    b'req',
+    b'res',
+    b'result',
+    b'ret',
+    b'return',
+    b'retval',
+    b'root',
+    b's',
+    b'sb',
+    b'size',
+    b'sizeof',
+    b'sk',
+    b'skb',
+    b'spec',
+    b'start',
+    b'state',
+    b'static',
+    b'status',
+    b'struct',
+    b't',
+    b'tmp',
+    b'tp',
+    b'type',
+    b'val',
+    b'value',
+    b'vcpu',
+    b'x'
+)
 
 def isIdent(bstr):
-    if len(bstr) < 2:
-        return False
-    elif bstr in blacklist:
+    if (len(bstr) < 2 or
+        bstr in blacklist or
+        bstr.startswith(b'~')):
         return False
     else:
         return True
@@ -182,6 +196,40 @@ def getDataDir():
 def currentProject():
     return os.path.basename(os.path.dirname(getDataDir()))
 
-def hasSupportedExt(filename):
-    ext = os.path.splitext(filename)[1]
-    return ext.lower() in ['.c', '.cc', '.cpp', '.c++', '.cxx', '.h', '.s']
+def getFileFamily(filename):
+    name, ext = os.path.splitext(filename)
+
+    if ext.lower() in ['.c', '.cc', '.cpp', '.c++', '.cxx', '.h', '.s'] :
+        return 'C' # C file family and ASM
+    elif ext.lower() in ['.dts', '.dtsi'] :
+        return 'D' # Devicetree files
+    elif name.lower()[:7] in ['kconfig'] and not ext.lower() in ['.rst']:
+        # Some files are named like Kconfig-nommu so we only check the first 7 letters
+        # We also exclude documentation files that can be named kconfig
+        return 'K' # Kconfig files
+    else :
+        return None
+
+# 1 char values are file families
+# 2 chars values with a M are macros families
+compatibility_list = {
+    'C' : ['C', 'K'],
+    'K' : ['K'],
+    'D' : ['D', 'CM']
+}
+
+# Check if families are compatible
+# First argument can be a list of different families
+# Second argument is the key for chossing the right array in the compatibility list
+def compatibleFamily(file_family, requested_family):
+    return any(item in file_family for item in compatibility_list[requested_family])
+
+# Check if a macro is compatible with the requested family
+# First argument can be a list of different families
+# Second argument is the key for chossing the right array in the compatibility list
+def compatibleMacro(macro_family, requested_family):
+    result = False
+    for item in macro_family:
+        item += 'M'
+        result = result or item in compatibility_list[requested_family]
+    return result

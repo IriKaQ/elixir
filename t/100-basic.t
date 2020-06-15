@@ -21,8 +21,6 @@
 #
 # This file uses core Perl modules only.
 
-use strict;
-use warnings;
 use autodie;    # note: still need to check system() calls manually
 
 use FindBin '$Bin';
@@ -40,7 +38,6 @@ use TestHelpers;
 
 # Set up
 my $tree_src_dir = sibling_abs_path('tree');
-my $db_dir = sibling_abs_path('db');        # the db dir is .gitignored
 
 my $tenv = TestEnvironment->new;
 
@@ -59,6 +56,8 @@ ok_or_die( (-f $query_py && -r _ && -x _), 'query.py executable',
 $tenv->build_repo($tree_src_dir);
 $tenv->update_env;  # Set LXR_REPO_DIR
 
+diag $tenv->report;
+
 # Check for tags in `script.sh list-tags`, as a sanity check before
 # building the test DB
 my @tags = `$script_sh list-tags`;
@@ -66,8 +65,9 @@ die("Could not list tags: $! ($?)") if $?;
 ok_or_die( @tags == 1, 'One tag present', "Not one tag (@{[scalar @tags]})");
 ok_or_die( $tags[0] =~ /^v5.4$/, 'Found the correct tag', 'Not the tag we expected');
 
-$tenv->build_db($db_dir);
+$tenv->build_db;
 $tenv->update_env;  # Set LXR_DATA_DIR
+my $db_dir = $tenv->lxr_data_dir;
 
 ok_or_die( -d $db_dir, 'database dir exists',
     "Database dir $db_dir not present");
@@ -80,15 +80,45 @@ ok( (-r File::Spec->catfile($db_dir, $_)), "$_ exists" )
 # Spot-check some identifiers
 
 run_produces_ok('ident query (nonexistent)',
-    [$query_py, qw(v5.4 ident SOME_NONEXISTENT_IDENTIFIER_XYZZY_PLUGH)],
+    [$query_py, qw(v5.4 ident SOME_NONEXISTENT_IDENTIFIER_XYZZY_PLUGH C)],
     [qr{^Symbol Definitions:}, qr{^Symbol References:}, qr{^\s*$}],
     MUST_SUCCEED);
 
 run_produces_ok('ident query (existent)',
-    [$query_py, qw(v5.4 ident i2c_acpi_notify)],
+    [$query_py, qw(v5.4 ident i2c_acpi_notify C)],
     [qr{^Symbol Definitions:}, qr{^Symbol References:},
-        qr{drivers/i2c/i2c-core-acpi\.c.+\b402\b.+\bfunction\b},    # def
-        qr{drivers/i2c/i2c-core-acpi\.c.+\b402,439}                 # refs
+        { def => qr{drivers/i2c/i2c-core-acpi\.c.+\b402\b.+\bfunction\b} },
+        { ref => qr{drivers/i2c/i2c-core-acpi\.c.+\b402,439} },
+    ],
+    MUST_SUCCEED);
+
+run_produces_ok('ident query (existent, #131)',
+    [$query_py, qw(v5.4 ident class C)],
+    [qr{^Symbol Definitions:}, qr{^Symbol References:},
+        { def => qr{issue131\.h.+\b9\b.+\bstruct\b} },
+        { ref => qr{issue131\.h.+\b13}  },
+    ],
+    MUST_SUCCEED);
+
+run_produces_ok('ident query (existent, #150)',
+    [$query_py, qw(v5.4 ident memset C)],
+    [qr{^Symbol Definitions:}, qr{^Symbol References:},
+        { def => qr{issue150\.S.+\b7\b.+\bfunction\b} },
+        { ref => qr{i2c-core-acpi\.c.+\b121\b} }
+    ],
+    MUST_SUCCEED);
+
+run_produces_ok('ident query (ENTRY that should not be detected, #150)',
+    [$query_py, qw(v5.4 ident), 'HYPERVISOR_##hypercall', 'C'],
+    [qr{^Symbol Definitions:}, qr{^Symbol References:},
+        { def => { not => qr{hypercall\.S} } },
+    ],
+    MUST_SUCCEED);
+
+run_produces_ok('ident query (ENTRY that should not be detected, #150)',
+    [$query_py, qw(v5.4 ident), '0xfffffffe', 'C'],
+    [qr{^Symbol Definitions:}, qr{^Symbol References:},
+        { def => { not => qr{bcm74xx_sprom\.c} } },
     ],
     MUST_SUCCEED);
 
@@ -112,7 +142,5 @@ run_produces_ok('file query (existent), .h',
     [$query_py, qw(v5.4 file /drivers/i2c/i2c-core.h)],
     [qr{i2c-core\.h}, qr{\bWe\b}],
     MUST_SUCCEED);
-
-#system('bash'); # Uncomment this if you want to interact with the test repo
 
 done_testing;
